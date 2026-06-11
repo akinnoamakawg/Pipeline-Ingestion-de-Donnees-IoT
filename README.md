@@ -17,7 +17,9 @@
 │   ├── index.py            # Code de la fonction AWS Lambda
 │   └── test_client.py      # Script de test HTTP client
 ├── static/
-    └── index.html          # Site de documentation technique
+|    └── index.html          # Site de documentation technique
+|── Rapport/
+     └── Rapport_final.pdf   # Rapport du projet
 ```
 
 ---
