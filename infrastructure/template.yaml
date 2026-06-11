@@ -1,0 +1,276 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Pipeline d'Ingestion de Données IoT en Temps Réel (Serverless)
+  Étudiant : akougblenou — Région : eu-west-3 (Paris)
+
+# ─────────────────────────────────────────────
+#  PARAMÈTRES
+# ─────────────────────────────────────────────
+Parameters:
+  StudentId:
+    Type: String
+    Default: akougblenou
+    Description: Identifiant étudiant utilisé pour nommer les ressources
+
+# ─────────────────────────────────────────────
+#  RESSOURCES
+# ─────────────────────────────────────────────
+Resources:
+
+  # ── 1. BUCKET S3 — DATA LAKE (zone brute IoT) ──────────────────────────────
+  DataLakeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${StudentId}-iot-data-lake"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ArchiveRawData
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 90
+                StorageClass: STANDARD_IA
+
+  # ── 2. BUCKET S3 — DOCUMENTATION TECHNIQUE ────────────────────────────────
+  TechDocBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${StudentId}-tech-doc"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # ── 3. TABLE DYNAMODB — FEATURE STORE ─────────────────────────────────────
+  IoTMetricsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${StudentId}-iot-metrics"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: request_id
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: request_id
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  # ── 4. RÔLE IAM — LAMBDA ──────────────────────────────────────────────────
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${StudentId}-lambda-iot-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: IoTLambdaPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Accès S3 — lecture/écriture sur le Data Lake uniquement
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${StudentId}-iot-data-lake/*"
+              # Accès DynamoDB — écriture dans la table de métriques
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt IoTMetricsTable.Arn
+
+  # ── 5. FONCTION LAMBDA ────────────────────────────────────────────────────
+  IoTIngestionFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${StudentId}-iot-ingestion"
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          S3_BUCKET: !Sub "${StudentId}-iot-data-lake"
+          DYNAMODB_TABLE: !Sub "${StudentId}-iot-metrics"
+      Code:
+        ZipFile: |
+          # Placeholder — remplacer par le contenu de index.py
+          import json
+          def lambda_handler(event, context):
+              return {
+                  "statusCode": 200,
+                  "body": json.dumps({"message": "placeholder"})
+              }
+
+  # ── 6. PERMISSION LAMBDA ← API GATEWAY ────────────────────────────────────
+  LambdaApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt IoTIngestionFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${IoTApi}/*/POST/ingest"
+
+  # ── 7. API GATEWAY (HTTP API) ─────────────────────────────────────────────
+  IoTApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${StudentId}-iot-api"
+      ProtocolType: HTTP
+      Description: Point d'entrée HTTP POST pour les capteurs IoT
+
+  IoTApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref IoTApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt IoTIngestionFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  IoTApiRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref IoTApi
+      RouteKey: "POST /ingest"
+      Target: !Sub "integrations/${IoTApiIntegration}"
+
+  IoTApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref IoTApi
+      StageName: prod
+      AutoDeploy: true
+
+  # ── 8. CLOUDFRONT OAC — DOCUMENTATION ─────────────────────────────────────
+  DocOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${StudentId}-doc-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # ── 9. BUCKET POLICY — DOCUMENTATION (autorise uniquement CloudFront OAC) ─
+  TechDocBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref TechDocBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontOAC
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "arn:aws:s3:::${StudentId}-tech-doc/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${DocCloudFrontDistribution}"
+
+  # ── 10. DISTRIBUTION CLOUDFRONT — DOCUMENTATION (OAC) ─────────────────────
+  DocCloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub "${StudentId} — Documentation Technique (OAC)"
+        Enabled: true
+        DefaultRootObject: index.html
+        Origins:
+          - Id: TechDocS3Origin
+            DomainName: !GetAtt TechDocBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt DocOAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""   # vide car on utilise OAC, pas OAI
+        DefaultCacheBehavior:
+          TargetOriginId: TechDocS3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # CachingOptimized (AWS Managed)
+          Compress: true
+        PriceClass: PriceClass_100
+        HttpVersion: http2
+
+  # ── 11. DISTRIBUTION CLOUDFRONT — API GATEWAY (CDN d'ingestion) ───────────
+  IngestionCloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub "${StudentId} — CDN Ingestion IoT"
+        Enabled: true
+        Origins:
+          - Id: ApiGatewayOrigin
+            DomainName: !Sub "${IoTApi}.execute-api.${AWS::Region}.amazonaws.com"
+            CustomOriginConfig:
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+        DefaultCacheBehavior:
+          TargetOriginId: ApiGatewayOrigin
+          ViewerProtocolPolicy: https-only
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad  # CachingDisabled (AWS Managed)
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # AllViewer (AWS Managed)
+          Compress: false
+        OriginGroups:
+          Quantity: 0
+        PriceClass: PriceClass_100
+        HttpVersion: http2
+
+# ─────────────────────────────────────────────
+#  OUTPUTS
+# ─────────────────────────────────────────────
+Outputs:
+
+  CloudFrontIngestionURL:
+    Description: URL CloudFront pour l'ingestion IoT (utiliser dans test_client.py)
+    Value: !Sub "https://${IngestionCloudFrontDistribution.DomainName}/prod/ingest"
+    Export:
+      Name: !Sub "${StudentId}-IngestionURL"
+
+  CloudFrontDocURL:
+    Description: URL CloudFront pour la documentation technique
+    Value: !Sub "https://${DocCloudFrontDistribution.DomainName}"
+    Export:
+      Name: !Sub "${StudentId}-DocURL"
+
+  ApiGatewayURL:
+    Description: URL directe de l'API Gateway (prod)
+    Value: !Sub "https://${IoTApi}.execute-api.${AWS::Region}.amazonaws.com/prod/ingest"
+
+  DataLakeBucketName:
+    Description: Nom du bucket S3 Data Lake
+    Value: !Ref DataLakeBucket
+
+  TechDocBucketName:
+    Description: Nom du bucket S3 Documentation
+    Value: !Ref TechDocBucket
+
+  DynamoDBTableName:
+    Description: Nom de la table DynamoDB
+    Value: !Ref IoTMetricsTable
+
+  LambdaFunctionName:
+    Description: Nom de la fonction Lambda
+    Value: !Ref IoTIngestionFunction
