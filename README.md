@@ -1,7 +1,7 @@
 # Pipeline d'Ingestion de Données IoT en Temps Réel (Serverless)
 
 > **Cours** : Introduction à AWS — Master 1 IABD 2026  
-> **Étudiant** : akougblenou  
+> **Étudiant** : Amos Kokou KOUGBLENOU  
 > **Responsable** : Mofiala Hervé LOKOSSOU  
 > **Région AWS** : `eu-west-3` (Paris)
 
